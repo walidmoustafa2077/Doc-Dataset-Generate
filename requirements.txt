@@ -1,0 +1,12 @@
+# Shadow Removal Dataset Generator - Requirements
+# Install with: pip install -r requirements.txt
+
+# Core image processing
+numpy>=1.24.0
+opencv-python>=4.8.0
+
+# Progress bar
+tqdm>=4.66.0
+
+# PDF extraction
+PyMuPDF>=1.23.0
