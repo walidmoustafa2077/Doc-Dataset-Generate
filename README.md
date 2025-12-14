@@ -370,4 +370,3 @@ For issues or questions:
 - Check [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines
 - Review debug mode output to inspect processing pipeline
 - Verify asset directories have image files with supported extensions (.png, .jpg, .jpeg, .bmp, .tiff)
-- See `.github/copilot-instructions.md` for AI agent development guidance
