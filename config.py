@@ -16,7 +16,7 @@ SHADOW_OVERLAYS_DIR = BASE_DIR / "Shadow Overlays"
 BACKGROUND_DIR = BASE_DIR / "Background"
 
 # Output paths
-OUTPUT_DIR = BASE_DIR / "SynDoc_Wild_v1"
+OUTPUT_DIR = BASE_DIR / "SynDoc_Wild_v2"
 TRAIN_DIR = OUTPUT_DIR / "train"
 INPUT_DIR = TRAIN_DIR / "input"
 TARGET_DIR = TRAIN_DIR / "target"
@@ -42,8 +42,8 @@ SUPPORTED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif'}
 # =============================================================================
 # Perspective warp: random corner offset range (pixels)
 # Increased for more noticeable camera angle effect (trapezoid distortion)
-WARP_MIN_OFFSET = 100
-WARP_MAX_OFFSET = 150
+WARP_MIN_OFFSET = 50
+WARP_MAX_OFFSET = 125
 
 # =============================================================================
 # SHADOW PARAMETERS
@@ -54,29 +54,40 @@ SHADOW_BLUR_MAX = 15
 
 # Shadow opacity range (0.0 = invisible, 1.0 = fully opaque)
 SHADOW_OPACITY_MIN = 0.6
-SHADOW_OPACITY_MAX = 0.9
+SHADOW_OPACITY_MAX = 1.0
+
+# Shadow ambient fill strength (simulates secondary light filling shadow)
+# Real shadows are lit by ambient light (sky, walls, floor reflection)
+# This creates the blue/purple tints seen in real hand shadows
+# INCREASED: More visible color tinting in shadows (0.20-0.30)
+SHADOW_AMBIENT_FILL_MIN = 0.20
+SHADOW_AMBIENT_FILL_MAX = 0.30
 
 # =============================================================================
 # CAMERA SIMULATION PARAMETERS
 # =============================================================================
 # Defocus blur kernel range (simulates lens aberration)
-DEFOCUS_BLUR_MIN = 2
-DEFOCUS_BLUR_MAX = 4
+# REDUCED: 1-2 pixels only (vs 2-4 which was too aggressive)
+# Real smartphone cameras on documents are almost in focus with minimal blur
+# Main degradation should be noise and JPEG, not blur
+DEFOCUS_BLUR_MIN = 1
+DEFOCUS_BLUR_MAX = 2
 
-# Gaussian noise sigma range
-NOISE_SIGMA_MIN = 6
-NOISE_SIGMA_MAX = 8
+# Gaussian noise sigma range (increased for better degradation visibility)
+NOISE_SIGMA_MIN = 7
+NOISE_SIGMA_MAX = 10
 
-# JPEG compression quality range (60-85, lower = more artifacts)
-JPEG_QUALITY_MIN = 80
-JPEG_QUALITY_MAX = 90
+# JPEG compression quality range (65-80, lower = more artifacts)
+# Lowered to 65-80 to force model to handle compression blocks
+JPEG_QUALITY_MIN = 65
+JPEG_QUALITY_MAX = 80
 
 # =============================================================================
 # TEXTURE BLENDING
 # =============================================================================
 # Paper texture blend strength (0.0 = no texture, 1.0 = full multiply)
 # Increased further to make texture clearly visible on white areas
-TEXTURE_BLEND_MIN = 0.6
+TEXTURE_BLEND_MIN = 0.4
 TEXTURE_BLEND_MAX = 0.8
 
 # =============================================================================
@@ -96,4 +107,4 @@ DEBUG_SAVE_COUNT = 0
 # OUTPUT FORMAT
 # =============================================================================
 # PNG compression level (0-9, higher = smaller file, slower)
-PNG_COMPRESSION = 8
+PNG_COMPRESSION = 4

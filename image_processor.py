@@ -267,35 +267,43 @@ def apply_perspective_warp(image: np.ndarray,
         
         # Remove white rows from top
         for y in range(y_min, y_max):
-            white_pct = np.sum(gray[y, x_min:x_max] >= 245) / (x_max - x_min) * 100
-            if white_pct > 50:
-                y_min = y + 1
-            else:
-                break
+            width = x_max - x_min
+            if width > 0:
+                white_pct = np.sum(gray[y, x_min:x_max] >= 245) / width * 100
+                if white_pct > 50:
+                    y_min = y + 1
+                else:
+                    break
         
         # Remove white rows from bottom
         for y in range(y_max - 1, y_min - 1, -1):
-            white_pct = np.sum(gray[y, x_min:x_max] >= 245) / (x_max - x_min) * 100
-            if white_pct > 50:
-                y_max = y
-            else:
-                break
+            width = x_max - x_min
+            if width > 0:
+                white_pct = np.sum(gray[y, x_min:x_max] >= 245) / width * 100
+                if white_pct > 50:
+                    y_max = y
+                else:
+                    break
         
         # Remove white columns from left
         for x in range(x_min, x_max):
-            white_pct = np.sum(gray[y_min:y_max, x] >= 245) / (y_max - y_min) * 100
-            if white_pct > 50:
-                x_min = x + 1
-            else:
-                break
+            height = y_max - y_min
+            if height > 0:
+                white_pct = np.sum(gray[y_min:y_max, x] >= 245) / height * 100
+                if white_pct > 50:
+                    x_min = x + 1
+                else:
+                    break
         
         # Remove white columns from right
         for x in range(x_max - 1, x_min - 1, -1):
-            white_pct = np.sum(gray[y_min:y_max, x] >= 245) / (y_max - y_min) * 100
-            if white_pct > 50:
-                x_max = x
-            else:
-                break
+            height = y_max - y_min
+            if height > 0:
+                white_pct = np.sum(gray[y_min:y_max, x] >= 245) / height * 100
+                if white_pct > 50:
+                    x_max = x
+                else:
+                    break
         
         # Crop the warped image
         crop_h = y_max - y_min
@@ -364,24 +372,28 @@ def soften_shadow(shadow: np.ndarray, blur_kernel: Optional[int] = None) -> np.n
     return blurred
 
 
-def tint_shadow(shadow: np.ndarray, opacity: Optional[float] = None) -> np.ndarray:
+def tint_shadow(shadow: np.ndarray, opacity: Optional[float] = None,
+                ambient_color: Optional[np.ndarray] = None) -> np.ndarray:
     """
-    Apply opacity adjustment to shadow overlay.
-    Keeps shadow as pure black without any color tinting.
+    Apply opacity adjustment and ambient color tinting to shadow overlay.
+    
+    UPDATED: Shadows are now tinted with ambient environment color to simulate
+    real-world physics where shadows are filled by secondary light sources.
     
     Process:
     1. Get alpha channel from shadow (defines shadow shape and intensity)
-    2. Keep RGB as black (no tinting)
+    2. Tint RGB with ambient color (simulates ambient light filling shadow)
     3. Apply opacity to alpha channel to control shadow strength
     4. Return BGRA shadow ready for compositing
     
     Args:
-        shadow: Shadow overlay (BGRA, uint8) - black areas with alpha gradient
+        shadow: Shadow overlay (BGRA, uint8) - typically black with alpha gradient
         opacity: Shadow opacity factor 0-1 (None = random between SHADOW_OPACITY_MIN/MAX)
                  0.3 = very faint shadow, 0.8 = dark prominent shadow
+        ambient_color: Environment color (B, G, R) 0-255, None = keep shadow as-is
         
     Returns:
-        Shadow with alpha adjusted by opacity (BGRA, uint8)
+        Shadow with alpha adjusted and RGB tinted (BGRA, uint8)
     """
     if opacity is None:
         opacity = np.random.uniform(SHADOW_OPACITY_MIN, SHADOW_OPACITY_MAX)
@@ -392,8 +404,20 @@ def tint_shadow(shadow: np.ndarray, opacity: Optional[float] = None) -> np.ndarr
     # Get alpha channel (0-1 range) - this defines the shadow shape
     alpha = shadow[:, :, 3].astype(np.float32) / 255.0
     
-    # Keep RGB as black (no tinting, no color change)
-    # RGB channels stay as they are (black shadows)
+    # Optionally tint RGB with ambient color
+    if ambient_color is not None:
+        # Convert ambient color from 0-1 to 0-255 if needed
+        ambient_color = ambient_color.astype(np.float32)
+        if ambient_color.max() <= 1.0:
+            # Normalized 0-1 range, convert to 0-255
+            ambient_color_uint8 = (ambient_color * 255.0).astype(np.float32)
+        else:
+            # Already in 0-255 range
+            ambient_color_uint8 = ambient_color
+        
+        # Blend shadow RGB toward ambient color (creates colored shadows)
+        for i in range(3):
+            result[:, :, i] = ambient_color_uint8[i]
     
     # Apply opacity to alpha channel to control shadow strength
     result[:, :, 3] = alpha * opacity * 255
@@ -402,38 +426,42 @@ def tint_shadow(shadow: np.ndarray, opacity: Optional[float] = None) -> np.ndarr
 
 
 def composite_shadow(document: np.ndarray, shadow: np.ndarray, 
-                     opacity: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                     opacity: Optional[float] = None,
+                     ambient_color: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Composite pure black shadow onto document with pure darkening effect (no tinting).
-    Creates realistic shadow that darkens the document based on shadow shape/intensity.
+    Composite physically accurate colored shadow onto document.
+    
+    CRITICAL FIX: Real shadows are NOT pure black. They are lit by ambient light
+    (sky, walls, floor reflections), creating color tints. A hand shadow under a
+    warm desk lamp appears blue/purple because the shadow is filled with cool
+    ambient light while the lit area is warm.
     
     Algorithm:
-    1. Apply random opacity to shadow
-    2. Resize shadow to match document size using quality interpolation
-    3. Extract alpha channel (shadow shape/intensity) from shadow
-    4. For each pixel: darken document based on alpha only
-       - Where alpha=0 (no shadow): document unchanged
-       - Where alpha=1 (full shadow): document darkened by 70%
-    5. Return shadowed document, binary mask, and resized shadow for debug
+    1. Extract shadow shape (alpha channel)
+    2. Create shadow color by blending ambient environment color
+    3. Apply darkening + color shift to simulate real shadow physics
+    4. Return shadowed document, binary mask, and resized shadow for debug
     
     Shadow Effect Details:
-    - Pure black shadow (no color tinting with ambient light)
-    - Darkens document uniformly based on shadow alpha
-    - Realistic shadow that removes color/brightness, not tints it
-    - Physical: shadows in dataset should be pure dark, not colored, for cleaner training
+    - Shadow color = ambient_fill_strength * ambient_color (not pure black)
+    - Darkening effect = multiply blend (reduces brightness)
+    - Color tinting = additive ambient fill (simulates secondary light source)
+    - Result: Blue shadows under warm light, warm shadows under cool light
     
     Args:
         document: Base document image (BGR, uint8)
-        shadow: Shadow with alpha channel (BGRA, uint8) 
-               RGB is ignored (not used), alpha defines shadow intensity/shape
+        shadow: Shadow with alpha channel (BGRA, uint8)
         opacity: Shadow opacity factor 0-1 (None = random between SHADOW_OPACITY_MIN/MAX)
+        ambient_color: Background ambient color (B, G, R) 0-255, None = extract from shadow RGB
         
     Returns:
         Tuple of (shadowed_document, binary_mask, shadow_resized_for_debug)
-        - shadowed_document: document with black shadow darkening (BGR, uint8)
+        - shadowed_document: document with colored shadow (BGR, uint8)
         - binary_mask: where shadow visible = 255 (white), else = 0 (black) (grayscale, uint8)
         - shadow_resized: the shadow that was actually applied (for debug comparison)
     """
+    from config import SHADOW_AMBIENT_FILL_MIN, SHADOW_AMBIENT_FILL_MAX
+    
     # Random opacity if not specified
     if opacity is None:
         opacity = np.random.uniform(SHADOW_OPACITY_MIN, SHADOW_OPACITY_MAX)
@@ -442,7 +470,7 @@ def composite_shadow(document: np.ndarray, shadow: np.ndarray,
     shadow_resized = cv2.resize(shadow, (document.shape[1], document.shape[0]),
                                  interpolation=cv2.INTER_LANCZOS4)
     
-    # Extract alpha channel
+    # Extract alpha channel (shadow shape)
     alpha = shadow_resized[:, :, 3].astype(np.float32) / 255.0
     
     # Apply opacity to alpha
@@ -451,20 +479,43 @@ def composite_shadow(document: np.ndarray, shadow: np.ndarray,
     # Convert document to float
     doc_float = document.astype(np.float32)
     
-    # Apply shadow: realistic darkening that preserves shadow detail and gradients
-    # Using screen blend mode inverted: darken based on shadow alpha
-    # This creates more natural shadows that match the original shadow overlay better
+    # Determine ambient fill color (simulates secondary light filling the shadow)
+    if ambient_color is None:
+        # Use neutral gray as fallback
+        ambient_color_normalized = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+    else:
+        # Convert ambient color to 0-255 range if needed
+        ambient_color = ambient_color.astype(np.float32)
+        # Check if already normalized (0-1 range) or uint8 (0-255 range)
+        if ambient_color.max() <= 1.0:
+            # Already normalized 0-1
+            ambient_color_normalized = ambient_color
+            ambient_color_uint8 = (ambient_color * 255).astype(np.float32)
+        else:
+            # Convert from 0-255 to 0-1
+            ambient_color_normalized = ambient_color / 255.0
+            ambient_color_uint8 = ambient_color
+    
+    # Random ambient fill strength (how much secondary light fills shadow)
+    ambient_fill_strength = np.random.uniform(SHADOW_AMBIENT_FILL_MIN, SHADOW_AMBIENT_FILL_MAX)
+    
+    # PHYSICAL MODEL: Shadow = Darkening + Ambient Color Fill
     result = np.zeros_like(doc_float)
     
-    # For each color channel, apply shadow with better gradient preservation
     for i in range(3):
-        # Shadow blend: multiply document by (1 - shadow_intensity)
-        # More accurate shadow: use the shadow alpha more directly
-        # Where shadow is strong (alpha high): darken more
-        # Where shadow is weak (alpha low): darken less
-        # This preserves the original shadow's gradient structure
-        shadow_effect = alpha_with_opacity * 1.0  # Use full alpha effect
-        result[:, :, i] = doc_float[:, :, i] * (1 - shadow_effect)
+        # Step 1: Darken the document (shadow blocks primary light)
+        darkened = doc_float[:, :, i] * (1 - alpha_with_opacity * 0.7)
+        
+        # Step 2: Add ambient color fill (shadow lit by secondary light source)
+        # This creates the blue/purple/warm tints seen in real shadows
+        # Use uint8 range (0-255) for the ambient color contribution
+        if ambient_color.max() <= 1.0:
+            ambient_contribution = (ambient_color_uint8[i] * alpha_with_opacity * ambient_fill_strength)
+        else:
+            ambient_contribution = (ambient_color[i] * alpha_with_opacity * ambient_fill_strength)
+        
+        # Combine: darkened base + ambient fill
+        result[:, :, i] = darkened + ambient_contribution
     
     result = np.clip(result, 0, 255).astype(np.uint8)
     
@@ -524,43 +575,58 @@ def apply_defocus_blur(image: np.ndarray, kernel_size: Optional[int] = None) -> 
 
 def add_noise(image: np.ndarray, sigma: Optional[float] = None) -> np.ndarray:
     """
-    Add Gaussian noise to simulate camera sensor (but at moderate levels for cleaner training).
+    Add physically accurate intensity-dependent (heteroscedastic) Gaussian noise.
+    
+    CRITICAL FIX: Real camera sensors have VARIABLE Signal-to-Noise Ratio (SNR).
+    Dark areas (shadows) have fewer photons, resulting in much higher noise relative
+    to the signal. Bright areas (white paper) have many photons, cleaner signal.
     
     Physical Motivation:
-    - Photon shot noise: random quantum effect, always present
-    - Sensor readout noise: electronics add noise when reading sensor pixels
-    - ISO amplification: higher ISO increases noise (we use moderate levels)
-    - Dark areas have worse signal-to-noise ratio (shadows naturally noisier)
+    - Photon shot noise: sqrt(N) noise where N = photon count (Poisson process)
+    - Dark areas (low N): High relative noise (grainy)
+    - Bright areas (high N): Low relative noise (smooth)
+    - Sensor readout noise: constant but visible only in dark areas
     
     Noise Model:
-    - Gaussian noise approximates most digital cameras
-    - Smaller sigma = cleaner images (for training robustness)
-    - Noise naturally affects shadows more due to lower pixel intensity
+    - Base Gaussian noise scaled by darkness: noise_strength = sigma * (1 - brightness)
+    - Where brightness = pixel_value / 255
+    - Dark pixels (0): Maximum noise (1.5x sigma)
+    - Bright pixels (255): Minimum noise (0.2x sigma)
     
     Args:
         image: Input image (BGR, uint8)
-        sigma: Noise standard deviation (4-10 for NOISE_SIGMA_MIN/MAX)
-               - Low sigma (4): very clean, slight grain
-               - High sigma (10): noticeable noise, realistic camera
+        sigma: Base noise standard deviation (6-8 for NOISE_SIGMA_MIN/MAX)
+               - Actual noise per pixel varies by intensity
                None = random within config range
         
     Returns:
-        Image with added Gaussian noise (BGR, uint8)
+        Image with intensity-dependent noise (BGR, uint8)
         
     Effect:
-        - All pixels randomly perturbed by small amount
-        - Dark pixels (text) show less noise visually
-        - Light pixels (paper) show more visible noise
-        - Shadows naturally appear grainier
+        - Shadows appear very grainy (realistic low-light noise)
+        - White paper appears clean (realistic well-lit signal)
+        - Model learns to handle variable noise levels
     """
     if sigma is None:
         sigma = np.random.uniform(NOISE_SIGMA_MIN, NOISE_SIGMA_MAX)
     
-    # Generate Gaussian noise with mean=0, std=sigma
-    noise = np.random.normal(0, sigma, image.shape)
+    # Convert to float for noise calculation
+    img_float = image.astype(np.float32) / 255.0
+    
+    # Calculate noise mask: darker pixels get more noise (inverse of brightness)
+    # Dark (0.0) → noise_mask = 1.0 → full noise
+    # Bright (1.0) → noise_mask = 0.0 → minimal noise
+    noise_mask = 1.0 - img_float
+    
+    # Generate base Gaussian noise
+    noise = np.random.normal(0, sigma, image.shape).astype(np.float32)
+    
+    # Scale noise by darkness (heteroscedastic noise)
+    # Multiply by 1.5 to make shadow noise prominent, add 0.2 base for lit areas
+    scaled_noise = noise * (noise_mask * 1.5 + 0.2)
     
     # Add noise to image
-    noisy = image.astype(np.float32) + noise
+    noisy = image.astype(np.float32) + scaled_noise
     
     # Clip to valid uint8 range [0, 255]
     return np.clip(noisy, 0, 255).astype(np.uint8)
@@ -747,7 +813,7 @@ def create_input_image(ground_truth: np.ndarray, shadow: np.ndarray,
     Args:
         ground_truth: Clean warped document (target)
         shadow: Shadow overlay (BGRA)
-        ambient_color: Ambient color for shadow tinting
+        ambient_color: Ambient color for shadow tinting (B, G, R) 0-255
         
     Returns:
         Tuple of (degraded_input, binary_mask)
@@ -756,13 +822,13 @@ def create_input_image(ground_truth: np.ndarray, shadow: np.ndarray,
     softened = soften_shadow(shadow)
     
     # Step 2: Tint shadow with ambient color
-    tinted = tint_shadow(softened, ambient_color)
+    tinted = tint_shadow(softened, ambient_color=ambient_color)
     
-    # Step 3: Composite shadow onto document
-    shadowed, mask = composite_shadow(ground_truth, tinted)
+    # Step 3: Composite shadow onto document with ambient tinting
+    shadowed, mask, _ = composite_shadow(ground_truth, tinted, ambient_color=ambient_color)
     
-    # Step 4: Apply camera degradation
-    degraded = apply_camera_degradation(shadowed)
+    # Step 4: Apply camera degradation with ambient tinting
+    degraded = apply_camera_degradation(shadowed, ambient_color=ambient_color)
     
     return degraded, mask
 

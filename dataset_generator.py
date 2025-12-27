@@ -261,7 +261,7 @@ class DatasetGenerator:
             
             
             # =========================================================
-            # STEP 1: Create Ground Truth (Target Image)
+            # STEP 1: Create Clean Document (Base)
             # =========================================================
             # This is the clean document with texture and warp but NO shadow/noise
             
@@ -275,23 +275,30 @@ class DatasetGenerator:
             # Apply paper texture AFTER warp (texture follows the warped document)
             textured = apply_paper_texture(warped, texture)
             
-            # Store textured as our TARGET
-            target = textured.copy()
+            # Store textured as our clean base document
+            clean_doc = textured.copy()
             
             # =========================================================
-            # STEP 2: Create Shadowed Document (Input Image)
+            # STEP 2: Create Input with Shadow
             # =========================================================
-            # Add realistic shadows (pure black, no intermediate steps)
+            # Add physically accurate colored shadows FIRST (before degradation)
+            # This ensures shadows are visible under the same camera degradation
             
-            # Composite shadow directly onto document with random opacity
+            # Composite shadow directly onto document with random opacity and ambient color
             # Returns: shadowed document, mask, and resized shadow for debug
-            shadowed, mask, shadow_applied = composite_shadow(target, shadow)
+            shadowed, mask, shadow_applied = composite_shadow(clean_doc, shadow, ambient_color=ambient_color)
             
             # =========================================================
-            # STEP 3: Apply Camera Degradation (ISP Pipeline)
+            # STEP 3: Apply Same Camera Degradation to Both
             # =========================================================
-            # Simulate real smartphone camera artifacts with ambient tinting
+            # Apply identical ISP pipeline to both target and input
+            # This ensures they have the same blur, noise, and JPEG compression
+            # The ONLY difference is the shadow in the input
             
+            # Degrade target (no shadow, but same camera effects)
+            target = apply_camera_degradation(clean_doc, ambient_color=ambient_color)
+            
+            # Degrade input (with shadow + same camera effects)
             degraded = apply_camera_degradation(shadowed, ambient_color=ambient_color)
             
             # This is our INPUT image
