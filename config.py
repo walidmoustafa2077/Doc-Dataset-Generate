@@ -16,7 +16,7 @@ SHADOW_OVERLAYS_DIR = BASE_DIR / "Shadow Overlays"
 BACKGROUND_DIR = BASE_DIR / "Background"
 
 # Output paths
-OUTPUT_DIR = BASE_DIR / "SynDoc_Wild_v2"
+OUTPUT_DIR = BASE_DIR / "SynDoc_Wild"
 TRAIN_DIR = OUTPUT_DIR / "train"
 INPUT_DIR = TRAIN_DIR / "input"
 TARGET_DIR = TRAIN_DIR / "target"

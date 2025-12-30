@@ -26,7 +26,6 @@ from tqdm import tqdm
 
 from config import (
     OUTPUT_DIR, TRAIN_DIR, INPUT_DIR, TARGET_DIR, MASK_DIR,
-    TARGET_SIZE, TARGET_WIDTH, TARGET_HEIGHT,
     PNG_COMPRESSION, RANDOM_SEED, NUM_WORKERS
 )
 from asset_manager import AssetManager
@@ -328,7 +327,7 @@ class DatasetGenerator:
             self.errors.append((sample_id, str(e)))
             return False
     
-    def run(self, limit: Optional[int] = None, iterations: int = 5, test_split: float = 0.0, test_iterations: Optional[int] = None) -> None:
+    def run(self, limit: Optional[int] = None, iterations: int = 1, test_split: float = 0.0, test_iterations: Optional[int] = None) -> None:
         """
         Run the complete dataset generation pipeline.
         
@@ -524,8 +523,8 @@ def main():
         help="Maximum number of documents to process (default: all 1022)"
     )
     parser.add_argument(
-        "--iterations", "-i", type=int, default=5,
-        help="Number of iterations per document for training (default: 5)"
+        "--iterations", "-i", type=int, default=1,
+        help="Number of iterations per document for training (default: 1)"
     )
     parser.add_argument(
         "--test-split", "-t", type=float, default=0.0,
