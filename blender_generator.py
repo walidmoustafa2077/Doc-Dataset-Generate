@@ -12,6 +12,7 @@ import random
 import warnings
 from pathlib import Path
 from mathutils import Vector   # type: ignore
+import numpy as np
 
 
 # Suppress deprecation warnings
@@ -58,6 +59,19 @@ def scan_directory(directory: Path, extensions: list = None) -> list:
                 files.append(Path(root) / f)
     return files
 
+def get_average_color(bg_img):
+    # Create a buffer (much faster than list())
+    width, height = bg_img.size
+    pixels = np.empty(width * height * 4, dtype=np.float32)
+    bg_img.pixels.foreach_get(pixels)
+    
+    # Reshape to [pixels, RGBA]
+    pixels = pixels.reshape(-1, 4)
+    
+    # Average the R, G, B (ignore Alpha)
+    avg = np.mean(pixels[:, :3], axis=0)
+    return (avg[0], avg[1], avg[2])
+
 # =============================================================================
 # BLENDER SETUP (4.2 LTS)
 # =============================================================================
@@ -97,18 +111,31 @@ def setup_render_settings():
     
     # EEVEE Next settings
     eevee = scene.eevee
-    if hasattr(eevee, "taa_render_samples"):
-        eevee.taa_render_samples = 124
 
+    # SAMPLING
+    if hasattr(eevee, "render_samples"):
+        eevee.render_samples = 64
+
+    # Enable Temporal Anti-Aliasing for smoother edges
     if hasattr(eevee, "use_temporal_antialiasing"):
         eevee.use_temporal_antialiasing = True
 
+    # SHADOW SETTINGS
     if hasattr(eevee, "shadow_pool_size"):
         eevee.shadow_pool_size = '256' 
 
     # This blurs the shadow map pixels into a smooth gradient
     if hasattr(scene.eevee, "use_shadow_jitter"):
         scene.eevee.use_shadow_jitter = True
+
+    # Enable Ray Tracing for better contact shadows and reflections
+    if hasattr(eevee, "use_raytracing"):
+        eevee.use_raytracing = True
+
+    if hasattr(eevee, "use_gtao"):
+        eevee.use_gtao = True
+        # Increase distance to make the background color bleed more into the scene
+        eevee.gtao_distance = 2.0 
 
     # PERFORMANCE
     scene.render.use_persistent_data = True
@@ -129,7 +156,6 @@ def setup_render_settings():
 
 
 def setup_camera_and_plane(background_path: Path = None):
-
     # 1. Setup Camera
     cam_data = bpy.data.cameras.new("Camera")
     cam_obj = bpy.data.objects.new("Camera", cam_data)
@@ -137,11 +163,8 @@ def setup_camera_and_plane(background_path: Path = None):
     bpy.context.scene.camera = cam_obj
     cam_obj.location = (0, 0, 1.41)
     
-    avg_color = (1.0, 1.0, 1.0) # Default white
-
-    # 2. Setup Background and Sample Color
+    # 2. Setup Background Plane
     if background_path and background_path.exists():
-        # Add background plane
         bpy.ops.mesh.primitive_plane_add(size=1)
         bg_plane = bpy.context.object
         bg_plane.name = "BackgroundPlane"
@@ -151,71 +174,60 @@ def setup_camera_and_plane(background_path: Path = None):
         nodes = bg_mat.node_tree.nodes
         links = bg_mat.node_tree.links
         
-        # Load Image
         bg_img = bpy.data.images.load(str(background_path))
-        
-        # --- COLOR SAMPLING LOGIC ---
-        # Sample pixels to get the average scene tint
-        pixels = list(bg_img.pixels) # This is [R,G,B,A, R,G,B,A...]
-        if pixels:
-            # Sample every 100th pixel for performance
-            r_vals = pixels[0::400]
-            g_vals = pixels[1::400]
-            b_vals = pixels[2::400]
-            avg_color = (
-                sum(r_vals) / len(r_vals),
-                sum(g_vals) / len(g_vals),
-                sum(b_vals) / len(b_vals)
-            )
         
         tex_node = nodes.new('ShaderNodeTexImage')
         tex_node.image = bg_img
         links.new(tex_node.outputs['Color'], nodes["Principled BSDF"].inputs['Base Color'])
         
         bg_plane.data.materials.append(bg_mat)
-        bg_plane.location = (0, 0, -1)
+        
+        # --- TWEAK: Move closer to document for realistic contact shadows ---
+        bg_plane.location = (0, 0, -3.0) 
         bg_plane.scale = (4, 4, 1)
 
-    # 3. Setup Sunlight (Directional)
+    # 3. Setup Sunlight
     sun_data = bpy.data.lights.new(name="Sunlight", type='SUN')
     sun_obj = bpy.data.objects.new(name="Sunlight", object_data=sun_data)
     bpy.context.collection.objects.link(sun_obj)
     
-
-    # INCREASE ENERGY: 0.2 is too low for EEVEE-Next
-    sun_data.energy = random.uniform(1.75, 2.75) 
+    sun_data.energy = random.uniform(1.8, 3.0) 
+    sun_data.angle = random.uniform(0.02, 0.06) 
     
-    # SOFTEN SHADOWS: Increase angle for more realistic "phone" shadows
-    sun_data.angle = random.uniform(0.02, 0.1) # Radians (~5 degrees)
-    
-    # Force the light to use Jitter
     if hasattr(sun_data, "use_jitter"):
         sun_data.use_jitter = True
-        # Overblur makes things fuzzy. Set to 0.1 or 0 for maximum hardness.
         if hasattr(sun_data, "jitter_overblur"):
-            sun_data.jitter_overblur = 0.5 
+            sun_data.jitter_overblur = random.uniform(1.0, 2.0)
     
-    # Lower values (0.0001) make shadows appear for tiny wrinkles and cracks.
     if hasattr(sun_data, "resolution_limit"):
         sun_data.resolution_limit = 0.00005
     
-    # ROTATION: Ensure it points DOWN (X rotation should be around 0 to 0.5)
-    sun_obj.rotation_euler = (
-        random.uniform(0.1, 0.4),  # Tilt downwards
-        random.uniform(-0.2, 0.2), # Slight side tilt
-        random.uniform(0, 6.28)    # Random direction
-    )
+    sun_obj.rotation_euler = (random.uniform(0.1, 0.4),random.uniform(-0.2, 0.2),random.uniform(0, 6.28))
     
-    # 4. Setup World Tint (Ambient Light)
+    # 4. WORLD SETUP (Advanced Environment Lighting)
     world = bpy.context.scene.world or bpy.data.worlds.new("World")
     bpy.context.scene.world = world
     world.use_nodes = True
-    bg_node = world.node_tree.nodes.get("Background")
-    if bg_node:
-        bg_node.inputs['Color'].default_value = (avg_color[0], avg_color[1], avg_color[2], 1)
-        # FIX: Start with a LOW strength so Target and Input have the same lighting
-        bg_node.inputs['Strength'].default_value = 0.3
+    w_nodes = world.node_tree.nodes
+    w_links = world.node_tree.links
+    w_nodes.clear()
 
+    node_out = w_nodes.new('ShaderNodeOutputWorld')
+    node_bg = w_nodes.new('ShaderNodeBackground')
+    node_env = w_nodes.new('ShaderNodeTexEnvironment')
+    
+    # --- TWEAK: Control how the environment photo wraps around the scene ---
+    node_coord = w_nodes.new('ShaderNodeTexCoord')
+    # Using 'Window' makes the light come from the background image as seen by camera
+    w_links.new(node_coord.outputs['Window'], node_env.inputs['Vector'])
+    
+    node_env.image = bg_img
+    # Strength of 1.0 - 1.5 is perfect for de-shadowing color bleed
+    node_bg.inputs['Strength'].default_value = random.uniform(0.2, 0.4)
+
+    w_links.new(node_env.outputs['Color'], node_bg.inputs['Color'])
+    w_links.new(node_bg.outputs['Background'], node_out.inputs['Surface'])
+    
     return import_random_obj_mesh(OBJ_DIR)
 
 
@@ -239,50 +251,75 @@ def import_random_obj_mesh(obj_dir: Path) -> bpy.types.Object:
     return imported_obj
 
 
-def create_document_material(doc_obj, doc_path: Path, texture_path: Path = None):
+def create_document_material(doc_obj, doc_path: Path, texture_path: Path = None, avg_bg_color=(0.5, 0.5, 0.5)):
     mat = bpy.data.materials.new(name="DocMaterial")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
-    nodes.clear() # Start fresh
+    nodes.clear() 
     
-    # 1. Output and BSDF
     output = nodes.new('ShaderNodeOutputMaterial')
     bsdf = nodes.new('ShaderNodeBsdfPrincipled')
 
-    # 2. Main Document Texture
+    # --- FIX FOR BLENDER 4.2 ---
+    # The 'Specular' socket is now 'Specular IOR Level'
+    if 'Specular IOR Level' in bsdf.inputs:
+        bsdf.inputs['Specular IOR Level'].default_value = 0.2
+    elif 'Specular' in bsdf.inputs:
+        bsdf.inputs['Specular'].default_value = 0.2
+    # ---------------------------
+
+    # 1. Main Document Texture & Enhancements
     doc_tex = nodes.new('ShaderNodeTexImage')
     doc_tex.image = bpy.data.images.load(str(doc_path))
 
-    # 3. Hue/Saturation Node (Boosts Color)
-    # Saturation > 1.0 makes colors (photos/logos) more vivid
     hsv_node = nodes.new('ShaderNodeHueSaturation')
-    hsv_node.inputs['Saturation'].default_value = random.uniform(0.8, 1.8) # 1.0 is default
+    hsv_node.inputs['Saturation'].default_value = random.uniform(0.9, 1.6)
     
-    # 4. Brightness/Contrast Node (Darkens Text & Whitens Paper)
     bright_con = nodes.new('ShaderNodeBrightContrast')
-    # Contrast > 0.5 makes the black text much "blacker"
-    bright_con.inputs['Contrast'].default_value = random.uniform(0.6, 1.2)
+    bright_con.inputs['Contrast'].default_value = random.uniform(0.7, 1.2)
     
-    # 5. Gamma Node (Final Punch)
-    # Gamma > 1.0 makes the midtones (text) deeper and less "grey"
     gamma_node = nodes.new('ShaderNodeGamma')
-    gamma_node.inputs['Gamma'].default_value = random.uniform(0.5, 1.1)
+    gamma_node.inputs['Gamma'].default_value = random.uniform(0.6, 1.0)
     
-    # --- LINKING THE ENHANCEMENT CHAIN ---
-    # Texture -> HSV -> Bright/Contrast -> Gamma
     links.new(doc_tex.outputs['Color'], hsv_node.inputs['Color'])
     links.new(hsv_node.outputs['Color'], bright_con.inputs['Color'])
     links.new(bright_con.outputs['Color'], gamma_node.inputs['Color'])
     
-    final_image_output = gamma_node.outputs['Color']
+    # 2. SHADOW TINTING & SPECULAR CONTROL
+    shadow_diffuse = nodes.new('ShaderNodeBsdfDiffuse')
+    s2r = nodes.new('ShaderNodeShaderToRGB')
+    
+    tint_ramp = nodes.new('ShaderNodeValToRGB')
+    tint_ramp.color_ramp.elements[0].position = 0.02 
+    tint_ramp.color_ramp.elements[1].position = 0.15 
+    
+    shadow_tint_mix = nodes.new('ShaderNodeMix')
+    shadow_tint_mix.data_type = 'RGBA'
+    shadow_tint_mix.blend_type = 'MULTIPLY'
+    
+    # Tint Calculation
+    tint_r = avg_bg_color[0] * 0.85
+    tint_g = avg_bg_color[1] * 0.85
+    tint_b = min(1.0, avg_bg_color[2] * 1.3) 
+    shadow_tint_mix.inputs[7].default_value = (tint_r, tint_g, tint_b, 1.0)
+    
+    links.new(shadow_diffuse.outputs['BSDF'], s2r.inputs['Shader'])
+    links.new(s2r.outputs['Color'], tint_ramp.inputs['Fac'])
+    links.new(tint_ramp.outputs['Color'], shadow_tint_mix.inputs[0]) 
+    links.new(gamma_node.outputs['Color'], shadow_tint_mix.inputs[6])
 
-    # 5. Handle Paper Texture Blending
+    # Connect the ramp to Specular to kill reflections in shadows
+    # Again, use the 4.2 specific name
+    spec_socket = 'Specular IOR Level' if 'Specular IOR Level' in bsdf.inputs else 'Specular'
+    links.new(tint_ramp.outputs['Color'], bsdf.inputs[spec_socket])
+
+    final_image_output = shadow_tint_mix.outputs[2]
+
+    # 3. Paper Texture Blending
     if texture_path:
         tex_coord = nodes.new('ShaderNodeTexCoord')
         mapping = nodes.new('ShaderNodeMapping')
-        mapping.inputs['Scale'].default_value = (1, 1, 1)
-        
         paper_tex = nodes.new('ShaderNodeTexImage')
         paper_tex.image = bpy.data.images.load(str(texture_path))
         paper_tex.extension = 'CLIP'
@@ -290,56 +327,41 @@ def create_document_material(doc_obj, doc_path: Path, texture_path: Path = None)
         links.new(tex_coord.outputs['Generated'], mapping.inputs['Vector'])
         links.new(mapping.outputs['Vector'], paper_tex.inputs['Vector'])
         
-        # 1. Saturation Node
         paper_hsv = nodes.new('ShaderNodeHueSaturation')
-        paper_hsv.inputs['Saturation'].default_value = 1.2  # Increase to 2.0 for very vivid color
+        paper_hsv.inputs['Saturation'].default_value = 1.2
         links.new(paper_tex.outputs['Color'], paper_hsv.inputs['Color'])
 
-        # 2. Brightness/Contrast (Acts as Sharpening)
         paper_enhance = nodes.new('ShaderNodeBrightContrast')
-        paper_enhance.inputs['Contrast'].default_value = 0.3   # Higher contrast makes fibers/details look "sharper"
+        paper_enhance.inputs['Contrast'].default_value = 0.3
         links.new(paper_hsv.outputs['Color'], paper_enhance.inputs['Color'])
 
-        # A. Create a "Cavity Map" (Isolate the black creases)
-        # This makes the deep parts of the fold DARKER in the color itself
         rgb_to_bw = nodes.new('ShaderNodeRGBToBW')
-        links.new(paper_tex.outputs['Color'], rgb_to_bw.inputs['Color'])
-        
-        val_ramp = nodes.new('ShaderNodeValToRGB')
-        val_ramp.color_ramp.elements[0].position = 0.4  # Darkest folds
-        val_ramp.color_ramp.elements[1].position = 0.8  # Flat areas
-        
-        links.new(rgb_to_bw.outputs['Val'], val_ramp.inputs['Fac'])
+        links.new(paper_enhance.outputs['Color'], rgb_to_bw.inputs['Color'])
 
-        # --- COLOR LOGIC ---
+        # COLOR MIX
         color_mix = nodes.new('ShaderNodeMix')
         color_mix.data_type = 'RGBA'
         color_mix.blend_type = 'MULTIPLY' 
-        color_mix.inputs[0].default_value = random.uniform(0.8, 0.9) 
+        color_mix.inputs[0].default_value = random.uniform(0.85, 0.98) 
         
-        links.new(final_image_output, color_mix.inputs[6])          # Document image
-        links.new(paper_enhance.outputs['Color'], color_mix.inputs[7]) # ENHANCED Texture
+        links.new(final_image_output, color_mix.inputs[6])
+        links.new(paper_enhance.outputs['Color'], color_mix.inputs[7])
         links.new(color_mix.outputs[2], bsdf.inputs['Base Color'])
 
-        # --- PHYSICAL LOGIC (BUMP & ROUGHNESS) ---
-        rgb_to_bw = nodes.new('ShaderNodeRGBToBW')
-        # Use the enhanced color for the bump so the "sharpening" affects the depth too
-        links.new(paper_enhance.outputs['Color'], rgb_to_bw.inputs['Color'])
-        
-       # Gamma 2.0 crunches the heightmap to make cracks physically deeper
+        # BUMP
         bump_gamma = nodes.new('ShaderNodeGamma')
         bump_gamma.inputs['Gamma'].default_value = 2.0
         links.new(rgb_to_bw.outputs['Val'], bump_gamma.inputs['Color'])
 
         bump = nodes.new('ShaderNodeBump')
-        bump.inputs['Strength'].default_value = random.uniform(0.25, 0.45) 
-        bump.inputs['Distance'].default_value = random.uniform(0.02, 0.05)
+        bump.inputs['Strength'].default_value = random.uniform(0.35, 0.5) 
+        bump.inputs['Distance'].default_value = random.uniform(0.02, 0.04)
         links.new(bump_gamma.outputs['Color'], bump.inputs['Height'])
         links.new(bump.outputs['Normal'], bsdf.inputs['Normal'])
 
-        # Roughness Mapping 
+        # ROUGHNESS
         map_rough = nodes.new('ShaderNodeMapRange')
-        map_rough.inputs['To Min'].default_value = 0.8
+        map_rough.inputs['To Min'].default_value = 0.9
         map_rough.inputs['To Max'].default_value = 1.0
         links.new(rgb_to_bw.outputs['Val'], map_rough.inputs['Value'])
         links.new(map_rough.outputs['Result'], bsdf.inputs['Roughness'])
@@ -512,7 +534,7 @@ def render_triplet(doc_path: Path, output_counter: int, bg_files: list, tex_file
     tex = random.choice(tex_files) if tex_files else None
     
     doc_obj = setup_camera_and_plane(bg)
-    create_document_material(doc_obj, doc_path, tex)
+    create_document_material(doc_obj, doc_path, tex, get_average_color(bpy.data.images.load(str(bg))) if bg else (0.5, 0.5, 0.5))
     
     # 1. Target Render
     bpy.context.scene.render.filepath = str(target_dir / f"{output_counter:05d}.png")
