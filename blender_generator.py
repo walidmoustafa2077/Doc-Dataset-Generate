@@ -251,42 +251,56 @@ def import_random_obj_mesh(obj_dir: Path) -> bpy.types.Object:
     return imported_obj
 
 
+
 def create_document_material(doc_obj, doc_path: Path, texture_path: Path = None, avg_bg_color=(0.5, 0.5, 0.5)):
     mat = bpy.data.materials.new(name="DocMaterial")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
     nodes.clear() 
-    
+
     output = nodes.new('ShaderNodeOutputMaterial')
     bsdf = nodes.new('ShaderNodeBsdfPrincipled')
 
-    # --- FIX FOR BLENDER 4.2 ---
-    # The 'Specular' socket is now 'Specular IOR Level'
-    if 'Specular IOR Level' in bsdf.inputs:
-        bsdf.inputs['Specular IOR Level'].default_value = 0.2
-    elif 'Specular' in bsdf.inputs:
-        bsdf.inputs['Specular'].default_value = 0.2
-    # ---------------------------
+    # --- 1. BSDF PHYSICAL PROPERTIES (FIXING GLASSY/PLASTIC LOOK) ---
+    # Specular: Paper reflects very little light. 0.02 is much more realistic than 0.2.
+    spec_socket = 'Specular IOR Level' if 'Specular IOR Level' in bsdf.inputs else 'Specular'
+    bsdf.inputs[spec_socket].default_value = 0.02
 
-    # 1. Main Document Texture & Enhancements
+    # Subsurface: Makes the document look organic/fibrous rather than solid plastic.
+    # Light enters the paper and bounces around.
+    if 'Subsurface Weight' in bsdf.inputs: # Blender 4.0+
+        bsdf.inputs['Subsurface Weight'].default_value = 0.15
+        bsdf.inputs['Subsurface Radius'].default_value = (0.1, 0.1, 0.1)
+    elif 'Subsurface' in bsdf.inputs:
+        bsdf.inputs['Subsurface'].default_value = 0.15
+
+    # Sheen: Adds a soft "fuzzy" highlight at grazing angles, perfect for paper/cloth.
+    if 'Sheen Weight' in bsdf.inputs: # Blender 4.0+
+        bsdf.inputs['Sheen Weight'].default_value = 0.8
+        bsdf.inputs['Sheen Roughness'].default_value = 0.5
+    elif 'Sheen' in bsdf.inputs:
+        bsdf.inputs['Sheen'].default_value = 0.8
+
+    # --- 2. MAIN DOCUMENT TEXTURE ---
     doc_tex = nodes.new('ShaderNodeTexImage')
     doc_tex.image = bpy.data.images.load(str(doc_path))
 
     hsv_node = nodes.new('ShaderNodeHueSaturation')
-    hsv_node.inputs['Saturation'].default_value = random.uniform(0.9, 1.6)
+    hsv_node.inputs['Saturation'].default_value = random.uniform(0.9, 1.3)
     
     bright_con = nodes.new('ShaderNodeBrightContrast')
-    bright_con.inputs['Contrast'].default_value = random.uniform(0.7, 1.2)
+    bright_con.inputs['Contrast'].default_value = random.uniform(0.8, 1.1)
     
     gamma_node = nodes.new('ShaderNodeGamma')
-    gamma_node.inputs['Gamma'].default_value = random.uniform(0.6, 1.0)
+    gamma_node.inputs['Gamma'].default_value = random.uniform(0.8, 1.0)
     
     links.new(doc_tex.outputs['Color'], hsv_node.inputs['Color'])
     links.new(hsv_node.outputs['Color'], bright_con.inputs['Color'])
     links.new(bright_con.outputs['Color'], gamma_node.inputs['Color'])
     
-    # 2. SHADOW TINTING & SPECULAR CONTROL
+    # --- 3. SHADOW TINTING & SPECULAR OCCLUSION ---
+    # This keeps shadows from looking "gray" and kills specular in dark areas
     shadow_diffuse = nodes.new('ShaderNodeBsdfDiffuse')
     s2r = nodes.new('ShaderNodeShaderToRGB')
     
@@ -298,7 +312,6 @@ def create_document_material(doc_obj, doc_path: Path, texture_path: Path = None,
     shadow_tint_mix.data_type = 'RGBA'
     shadow_tint_mix.blend_type = 'MULTIPLY'
     
-    # Tint Calculation
     tint_r = avg_bg_color[0] * 0.85
     tint_g = avg_bg_color[1] * 0.85
     tint_b = min(1.0, avg_bg_color[2] * 1.3) 
@@ -309,14 +322,9 @@ def create_document_material(doc_obj, doc_path: Path, texture_path: Path = None,
     links.new(tint_ramp.outputs['Color'], shadow_tint_mix.inputs[0]) 
     links.new(gamma_node.outputs['Color'], shadow_tint_mix.inputs[6])
 
-    # Connect the ramp to Specular to kill reflections in shadows
-    # Again, use the 4.2 specific name
-    spec_socket = 'Specular IOR Level' if 'Specular IOR Level' in bsdf.inputs else 'Specular'
-    links.new(tint_ramp.outputs['Color'], bsdf.inputs[spec_socket])
-
     final_image_output = shadow_tint_mix.outputs[2]
 
-    # 3. Paper Texture Blending
+    # --- 4. PAPER TEXTURE & FINE DETAIL (ROUGHNESS/BUMP) ---
     if texture_path:
         tex_coord = nodes.new('ShaderNodeTexCoord')
         mapping = nodes.new('ShaderNodeMapping')
@@ -327,52 +335,56 @@ def create_document_material(doc_obj, doc_path: Path, texture_path: Path = None,
         links.new(tex_coord.outputs['Generated'], mapping.inputs['Vector'])
         links.new(mapping.outputs['Vector'], paper_tex.inputs['Vector'])
         
-        paper_hsv = nodes.new('ShaderNodeHueSaturation')
-        paper_hsv.inputs['Saturation'].default_value = 1.2
-        links.new(paper_tex.outputs['Color'], paper_hsv.inputs['Color'])
-
         paper_enhance = nodes.new('ShaderNodeBrightContrast')
         paper_enhance.inputs['Contrast'].default_value = 0.3
-        links.new(paper_hsv.outputs['Color'], paper_enhance.inputs['Color'])
+        links.new(paper_tex.outputs['Color'], paper_enhance.inputs['Color'])
 
         rgb_to_bw = nodes.new('ShaderNodeRGBToBW')
         links.new(paper_enhance.outputs['Color'], rgb_to_bw.inputs['Color'])
 
-        # COLOR MIX
+        # BASE COLOR MIX
         color_mix = nodes.new('ShaderNodeMix')
         color_mix.data_type = 'RGBA'
         color_mix.blend_type = 'MULTIPLY' 
-        color_mix.inputs[0].default_value = random.uniform(0.85, 0.98) 
+        color_mix.inputs[0].default_value = random.uniform(0.6, 0.9) 
         
         links.new(final_image_output, color_mix.inputs[6])
         links.new(paper_enhance.outputs['Color'], color_mix.inputs[7])
         links.new(color_mix.outputs[2], bsdf.inputs['Base Color'])
 
-        # BUMP
-        bump_gamma = nodes.new('ShaderNodeGamma')
-        bump_gamma.inputs['Gamma'].default_value = 2.0
-        links.new(rgb_to_bw.outputs['Val'], bump_gamma.inputs['Color'])
+        # MICRO-ROUGHNESS (This breaks the "plastic" shine)
+        noise_tex = nodes.new('ShaderNodeTexNoise')
+        noise_tex.inputs['Scale'].default_value = 600.0 # Very fine grain
+        noise_tex.inputs['Detail'].default_value = 15.0
 
-        bump = nodes.new('ShaderNodeBump')
-        bump.inputs['Strength'].default_value = random.uniform(0.35, 0.5) 
-        bump.inputs['Distance'].default_value = random.uniform(0.02, 0.04)
-        links.new(bump_gamma.outputs['Color'], bump.inputs['Height'])
-        links.new(bump.outputs['Normal'], bsdf.inputs['Normal'])
-
-        # ROUGHNESS
         map_rough = nodes.new('ShaderNodeMapRange')
-        map_rough.inputs['To Min'].default_value = 0.9
-        map_rough.inputs['To Max'].default_value = 1.0
-        links.new(rgb_to_bw.outputs['Val'], map_rough.inputs['Value'])
+        map_rough.inputs['To Min'].default_value = 0.85 # Minimum roughness (matte)
+        map_rough.inputs['To Max'].default_value = 1.0  # Maximum roughness
+
+        # Mix paper texture map with high-frequency noise
+        mix_rough = nodes.new('ShaderNodeMix')
+        mix_rough.data_type = 'FLOAT'
+        mix_rough.blend_type = 'LINEAR_LIGHT'
+        mix_rough.inputs[0].default_value = 0.1 # Blend in just enough grain to kill specular smoothness
+
+        links.new(rgb_to_bw.outputs['Val'], mix_rough.inputs[4])
+        links.new(noise_tex.outputs['Fac'], mix_rough.inputs[5])
+        links.new(mix_rough.outputs[0], map_rough.inputs['Value'])
         links.new(map_rough.outputs['Result'], bsdf.inputs['Roughness'])
+
+        # BUMP (Reduced Distance for thin paper feel)
+        bump = nodes.new('ShaderNodeBump')
+        bump.inputs['Strength'].default_value = random.uniform(0.2, 0.5) 
+        bump.inputs['Distance'].default_value = 0.005 # Small value = thin paper creases
+        links.new(rgb_to_bw.outputs['Val'], bump.inputs['Height'])
+        links.new(bump.outputs['Normal'], bsdf.inputs['Normal'])
         
     else:
         links.new(final_image_output, bsdf.inputs['Base Color'])
-        bsdf.inputs['Roughness'].default_value = 1.0
+        bsdf.inputs['Roughness'].default_value = 0.95
     
     links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
     doc_obj.data.materials.append(mat)
-
 
 def create_random_blob(name="BigShadowShape"):
     """Creates a smoothed, organic procedural mesh to prevent jagged shadows."""
